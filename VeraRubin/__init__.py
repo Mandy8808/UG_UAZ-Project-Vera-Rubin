@@ -2,9 +2,9 @@
 
 # Butler
 from .butler.butler import ExpButler
-from .butler.custom_butler import main_local_repo, create_empty_repo, transfer_all_visit_datasets,\
-                           discover_datasets_for_visit, instrument_register_from_remote, register_datasetTypes,\
-                           skymap_register_from_remote, ensure_chained_collection, transfer_visits
+from .butler.custom_butler import main_local_repo, create_empty_repo,\
+                           instrument_register_from_remote, register_datasetTypes, skymap_register_from_remote,\
+                           discover_datasets, transfer_dataset, ensure_chained_collection
 # Coadd
 from .coadd.custom_coadd import custom_coadd_filter, custom_coadd_multiband, load_custom_coadd_from_file
 from .coadd.custom_inject_coadd import coadd_exposures_pipeline, coadd_exposures_pipeline, leave_one_out_residual, validate_rotation
@@ -40,9 +40,9 @@ from visit.visit import Visit, combine_visits_selected, visit_dataset
 __all__ = [
     # ExpButler
     'ExpButler', 
-    'main_local_repo', 'create_empty_repo', 'transfer_all_visit_datasets',
-    'discover_datasets_for_visit', 'instrument_register_from_remote', 'register_datasetTypes',
-    'skymap_register_from_remote', 'ensure_chained_collection', 'transfer_visits',
+    'main_local_repo', 'create_empty_repo',
+    'instrument_register_from_remote', 'register_datasetTypes', 'skymap_register_from_remote',
+    'discover_datasets', 'transfer_dataset', 'ensure_chained_collection',
     # Coadd
     'custom_coadd_filter', 'custom_coadd_multiband', 'load_custom_coadd_from_file',
     'coadd_exposures_pipeline', 'leave_one_out_residual', 'validate_rotation',
