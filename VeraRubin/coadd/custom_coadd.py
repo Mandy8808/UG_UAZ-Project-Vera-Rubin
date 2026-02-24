@@ -255,7 +255,6 @@ def custom_coadd_multiband(butler, visits_selected, loc_data,
         print(f"[INFO] Query: {query_string}")
         print(f"[INFO] Bands: {bands}")
 
-
     # Set up executor
     executor = SimplePipelineExecutor.from_pipeline(
         pipeline, butler=butler,
@@ -319,7 +318,7 @@ def custom_coadd_multiband(butler, visits_selected, loc_data,
             'collection': executor.quantum_graph.metadata["output_run"],
             'coadd_type': 'deep_coadd_predetection',
             'tract': my_tract,
-            'patch': str(my_patch),
+            'patch': my_patch,
             'bands': list(bands),
             'instrument': 'LSSTComCam',
             'skymap': skymap

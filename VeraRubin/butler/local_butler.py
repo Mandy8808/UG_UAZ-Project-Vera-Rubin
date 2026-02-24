@@ -1,52 +1,182 @@
-# vera rubin v1.0
-# butler.custom_butler.py
 
-# Loading modules
-import collections
-import subprocess
 import pathlib
 import logging
 import os, sys
+import subprocess
 
-from lsst.daf.butler import Butler, DatasetType, DatasetRef, CollectionType
+from lsst.daf.butler import Butler, DatasetType, CollectionType
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from tools.tools import setup_logger, _run
 
-REQUIRED_TYPES = {
-    "visit_image",
-    "visit_summary",
-    "visit_summary_schema",
-    "visit_summary_metadata",
-    "deep_coadd",
-}
-
-# Top-level
-# ---------------------------------------------------------------------
-def main_local_repo(
-    LOCAL_REPO: str, 
-    REMOTE_REPO: str,
-    visits_datasetRef: list[DatasetRef],
-    remote_collection: str = "LSSTComCam/DP1",
-    LOGDIR: str = "/projects/BR/logs",
-    make_repo: bool = True,
-    chain_name: str = "local_main_chain"
-) -> bool:
+class LocalButler:
     """
-    Create a local Butler repo and import visits/deep_coadd and supporting datasets from a remote repo.
-    Parameters:
-        LOCAL_REPO: path to local repo to create (if make_repo=True) and/or use as transfer destination
-        REMOTE_REPO: path to remote repo to copy from
-        visits_datasetRef: list of DatasetRef objects (from the remote butler) describing each visit to transfer.
-        remote_collection: collection in the remote repo to read from (default "LSSTComCam/DP1")
-        LOGDIR: directory for logs (default "/projects/BR/logs")
-        make_repo: if True, creates a new empty repo at LOCAL_REPO before transfer (default True)
-        chain_name: name of the chained collection to create at the end (default "local_main_chain")
+    Manages the interaction between a local repository and a remote repository.
     """
 
-    # Setup logging directory and logger
+    REQUIRED_TYPES: set[str] = {
+        "visit_image", "visit_summary", "visit_summary_schema", "visit_summary_metadata",
+        "deep_coadd",
+    }
+
+    def __init__(self, local_repo: str, remote_repo: str, LOGDIR: str = "logs",):
+        """
+        Initialize the instance with local and remote repository references.
+        param local_repo: Path or name of the local repository.
+        :param remote_repo: URL or name of the remote repository.
+        """
+
+        self.local_repo = local_repo
+        self.remote_repo = remote_repo
+        self.logger = log_menseger(local_repo + LOGDIR, local_repo)
+        
+
+    def make_repo(self) -> None:
+        """
+        Creating an empty repo if requested
+        """
+        if os.path.exists(os.path.join(self.local_repo, "butler.yaml")):
+            raise FileExistsError(f"Repository already exists: {self.local_repo}")
+
+        os.makedirs(self.local_repo, exist_ok=True)
+        self.logger.info(f"Creating Butler repo at {self.local_repo}")
+        Butler.makeRepo(self.local_repo)
+        return None
+    
+    def reg_instruments(self, visits_datasetRef, remote_collection: str = "LSSTComCam/DP1") -> None:
+        """
+        Register instruments (collect unique instrument names from DatasetRefs)
+        """
+
+        instruments: set[str] = {ref.dataId["instrument"] for ref in visits_datasetRef}
+        self.logger.info(f"Registering instruments: {sorted(instruments)}")
+        try:
+            instrument_register_from_remote(
+                local_repo=self.local_repo,
+                remote_repo=self.remote_repo,
+                instruments=instruments,
+                remote_collection=remote_collection,
+                logger=self.logger
+            )
+            self.logger.info("Instrument registration complete.")
+        except Exception:
+            self.logger.exception("Could not register instruments")
+            raise
+    
+    def reg_transfer_skyMap(self, remote_collection: str = "LSSTComCam/DP1") -> None:
+        """
+        First: Registering SkyMap DatasetType and copying skyMap dataset(s) (preserving UUIDs)
+        Ensure skyMap DatasetType exists locally so transfer-datasets can attach refs
+
+        Second: Transfer skyMap(s)
+        """
     ##############
+        remote_butler = Butler(self.remote_repo, collections=remote_collection)
+        remote_dt = [dt for dt in remote_butler.registry.queryDatasetTypes()
+                     if dt.name == "skyMap"]
+        if remote_dt:
+            self.logger.info("Registering DatasetType 'skyMap' in local repo before transfer.")
+            register_datasetTypes(self.local_repo, remote_dt, logger=self.logger)
+        else:
+            self.logger.warning("Remote repo does NOT contain datasetType 'skyMap'.")
+            raise
+
+        # transfering skyMap(s)
+        try:
+            self.logger.info("Copying skyMap(s) from remote to local (preserving UUIDs)...")
+            skymap_register_from_remote(self.remote_repo, self.local_repo, remote_collections=remote_collection,
+                                        logger=self.logger)
+            self.logger.info("SkyMap copy finished.")
+        except Exception:
+            self.logger.exception("SkyMap copy failed.")
+            raise
+
+    def discover_transfer_datasets(self, visits_datasetRef, remote_collection: str = "LSSTComCam/DP1"):
+        """
+        First: Recompile information over the choosed datasets
+        Second: Transfering datasets
+        """
+        # In order to improve, we recompile some data_info as first step
+        ############################
+        self.logger.info("Starting recompilation of some Datas")
+        remote_butler = Butler(self.remote_repo, collections=remote_collection)
+
+        try:
+            # discover datasets
+            out_dic = discover_datasets(self.remote_repo, self.REQUIRED_TYPES, 
+                                    remote_collection=remote_collection, logger=self.logger)
+            required_present = out_dic["required_present"]
+            missing_required = out_dic["missing_required"]
+
+            if not required_present:
+                raise RuntimeError("No required datasets found in remote repo. Cannot proceed with transfer.")
+            datasettypes_to_register = {dt_name: remote_butler.registry.getDatasetType(dt_name) for dt_name in required_present}
+        except Exception:
+            self.logger.exception(f"Recompilation failed")
+            raise
+
+        # Registering datasetTypes in local
+        ##############
+        self.logger.info("Starting registering DatasetTypes")
+        try:
+            register_datasetTypes(self.local_repo, list(datasettypes_to_register.values()), logger=self.logger)
+            self.logger.info("DatasetType registration complete.")
+        except Exception:
+            self.logger.exception("Could not register DatasetTypes")
+            raise
+        del datasettypes_to_register  # free memory
+    
+        # Transfering datasets
+        ##############
+        self.logger.info("Starting dataset transfer loop")
+        collections_str = remote_collection  # pass to CLI
+        for ref in visits_datasetRef:
+            dataId = ref.dataId
+            visit = dataId["visit"]
+            band = dataId["band"]
+            instrument=dataId["instrument"]
+            self.logger.info(f"\n[VISIT] Processing visit {visit}")
+            
+            transfer_dataset(remote_repo=self.remote_repo, local_repo=self.local_repo, id_dataset=[visit],
+                             band=band, instrument=instrument, detector=None, day_obs=None, physical_filter=None,
+                             skymap=None, collections=collections_str, dataset=list(required_present),
+                             logger=self.logger,
+            )
+            self.logger.info(f"Transfer succeeded for dataId: {dataId}")
+        del required_present  # free memory
+
+
+    def chained(self, chain_name):
+        """
+        Create a chained collection that includes skymaps and the imported runs (so butler.get finds skyMap)
+        """
+        # Create a chained collection that includes skymaps and the imported runs (so butler.get finds skyMap)
+        self.logger.info("Making a chained collection")
+        
+        # Determine available collections in local registry
+        local_butler = Butler(self.local_repo, writeable=True)
+        runs = [c for c in local_butler.registry.queryCollections()
+                if local_butler.registry.getCollectionType(c) == CollectionType.RUN
+            ]
+        
+        chain_members = []
+        if "skymaps" in local_butler.registry.queryCollections():
+            chain_members.append("skymaps")
+        chain_members.extend(runs)
+
+        try:
+            self.logger.info(f"Creating chained collection '{chain_name}' with members: {chain_members}")
+            ensure_chained_collection(self.local_repo, chain_name, members=chain_members, logger=self.logger)
+        except Exception:
+            self.logger.exception("Could not create or set chained collection.")
+            raise
+
+##########
+def log_menseger(LOGDIR, LOCAL_REPO):
+    """
+    Setup logging directory and logger
+    """
     log_path = pathlib.Path(LOGDIR)
     log_path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["chmod", "ug+rw", LOGDIR], check=True)
@@ -56,140 +186,8 @@ def main_local_repo(
     logger.info(f"Created LOGDIR at {LOGDIR}")
     logger.info(f"Starting pipeline for local repo: {LOCAL_REPO}")
 
-    # Creating an empty repo if requested
-    ##############
-    if make_repo:
-        logger.info(f"Creating empty repo at {LOCAL_REPO}")
-        try:
-            create_empty_repo(path=LOCAL_REPO, logger=logger)
-            logger.info("Empty repo created successfully.")
-        except Exception as e:
-            logger.exception("Could not create empty repo")
-            raise
+    return logger
 
-    # Register instruments (collect unique instrument names from DatasetRefs)
-    ##############
-    instruments: set[str] = {ref.dataId["instrument"] for ref in visits_datasetRef}
-    logger.info(f"Registering instruments: {sorted(instruments)}")
-    try:
-        instrument_register_from_remote(
-            local_repo=LOCAL_REPO,
-            remote_repo=REMOTE_REPO,
-            instruments=instruments,
-            remote_collection=remote_collection,
-            logger=logger
-        )
-        logger.info("Instrument registration complete.")
-    except Exception:
-        logger.exception("Could not register instruments")
-        raise
-    
-    # Registering SkyMap DatasetType and copying skyMap dataset(s) (preserving UUIDs)
-    # Ensure skyMap DatasetType exists locally so transfer-datasets can attach refs
-    ##############
-    remote_butler = Butler(REMOTE_REPO, collections=remote_collection)
-
-    remote_dt = [dt for dt in remote_butler.registry.queryDatasetTypes()
-             if dt.name == "skyMap"]
-    if remote_dt:
-        logger.info("Registering DatasetType 'skyMap' in local repo before transfer.")
-        register_datasetTypes(LOCAL_REPO, remote_dt, logger=logger)
-    else:
-        logger.warning("Remote repo does NOT contain datasetType 'skyMap'.")
-        raise
-
-    # transfering skyMap(s)
-    try:
-        logger.info("Copying skyMap(s) from remote to local (preserving UUIDs)...")
-        skymap_register_from_remote(REMOTE_REPO, LOCAL_REPO, remote_collections=remote_collection, logger=logger)
-        logger.info("SkyMap copy finished.")
-    except Exception:
-        logger.exception("SkyMap copy failed.")
-        raise
-    
-    ############## DatasetTypes
-    # In order to improve, we recompile some data_info as first step
-    ############################
-    logger.info("Starting recompilation of some Datas")
-    try:
-        # discover datasets
-        out_dic = discover_datasets(REMOTE_REPO, REQUIRED_TYPES, 
-                                    remote_collection=remote_collection, logger=logger)
-        required_present = out_dic["required_present"]
-        missing_required = out_dic["missing_required"]
-
-        if not required_present:
-            raise RuntimeError("No required datasets found in remote repo. Cannot proceed with transfer.")
-        datasettypes_to_register = {dt_name: remote_butler.registry.getDatasetType(dt_name) for dt_name in required_present}
-    except Exception:
-        logger.exception(f"Recompilation failed for DatasetRef: {ref}")
-        raise
-
-    # Registering datasetTypes in local
-    ##############
-    logger.info("Starting registering DatasetTypes")
-    try:
-        register_datasetTypes(LOCAL_REPO, list(datasettypes_to_register.values()), logger=logger)
-        logger.info("DatasetType registration complete.")
-    except Exception:
-        logger.exception("Could not register DatasetTypes")
-        raise
-    del datasettypes_to_register  # free memory
-    
-    # Transfering datasets
-    ##############
-    logger.info("Starting dataset transfer loop")
-    collections_str = remote_collection  # pass to CLI
-    for ref in visits_datasetRef:
-        dataId = ref.dataId
-        visit = dataId["visit"]
-        band = dataId["band"]
-        instrument=dataId["instrument"]
-        logger.info(f"\n[VISIT] Processing visit {visit}")
-            
-        transfer_dataset(
-            remote_repo=REMOTE_REPO,
-            local_repo=LOCAL_REPO,
-            id_dataset=[visit],
-            band=band,
-            instrument=instrument,
-            detector=None,
-            day_obs=None,
-            physical_filter=None,
-            skymap=None,
-            collections=collections_str,
-            dataset=list(required_present),
-            logger=logger,
-        )
-        logger.info(f"Transfer succeeded for dataId: {dataId}")
-        
-    del required_present  # free memory
-
-    # Create a chained collection that includes skymaps and the imported runs (so butler.get finds skyMap)
-    logger.info("Making a chained collection")
-    # Determine available collections in local registry
-    local_butler = Butler(LOCAL_REPO, writeable=True)
-    runs = [c for c in local_butler.registry.queryCollections()
-            if local_butler.registry.getCollectionType(c) == CollectionType.RUN
-        ]
-    chain_members = []
-    if "skymaps" in local_butler.registry.queryCollections():
-        chain_members.append("skymaps")
-    chain_members.extend(runs)
-
-    try:
-        logger.info(f"Creating chained collection '{chain_name}' with members: {chain_members}")
-        ensure_chained_collection(LOCAL_REPO, chain_name, members=chain_members, logger=logger)
-    except Exception:
-        logger.exception("Could not create or set chained collection.")
-        raise
-
-    logger.info("Pipeline finished successfully.")
-    return True
-
-
-# Low-level helpers
-# ---------------------------------------------------------------------
 def create_empty_repo(path: str, logger: logging.Logger = None) -> bool:
     """Create a new local Butler repo (using Butler.makeRepo)."""
     if os.path.exists(os.path.join(path, "butler.yaml")):
@@ -203,9 +201,6 @@ def create_empty_repo(path: str, logger: logging.Logger = None) -> bool:
 
     Butler.makeRepo(path)
     return True
-
-# High-level operations
-# ---------------------------------------------------------------------
 
 def instrument_register_from_remote(
     local_repo: str,
@@ -223,15 +218,11 @@ def instrument_register_from_remote(
     instruments: set of instrument names (strings)
     remote_collection: collection to open the remote Butler with
     """
-    if not instruments:
-        raise RuntimeError("No instrument names provided.")
-    if logger:
-        logger.info(f"Detected instruments to register: {sorted(instruments)}")
+    if not instruments: raise RuntimeError("No instrument names provided.")
+    if logger: logger.info(f"Detected instruments to register: {sorted(instruments)}") 
+    if logger: logger.info(f"Opening remote Butler: {remote_repo} (collections={remote_collection})")
     
-    if logger:
-        logger.info(f"Opening remote Butler: {remote_repo} (collections={remote_collection})")
     remote = Butler(remote_repo, collections=remote_collection)
-
 
     # Get instrument records from remote registry
     remote_inst_records = [
@@ -317,8 +308,7 @@ def skymap_register_from_remote(
     3) Copy it using 'butler transfer-datasets' (preserves UUIDs).
     """
     # Normalize input
-    if isinstance(remote_collections, str):
-        remote_collections = [remote_collections]
+    if isinstance(remote_collections, str): remote_collections = [remote_collections]
 
     # Open remote repo
     remote = Butler(remote_repo, collections=remote_collections)
@@ -335,7 +325,6 @@ def skymap_register_from_remote(
     if logger: logger.info(f"[SKYMAP] SkyMap dimension found: {skymap_name}")
 
     # FIND ACTUAL SKYMAP DATASET (search all collections)
-    # all_remote_collections = list(remote.registry.queryCollections())
     all_remote_collections = [
         c for c in remote.registry.queryCollections() 
         if remote.registry.getCollectionType(c) == CollectionType.RUN
@@ -382,7 +371,7 @@ def skymap_register_from_remote(
 
 def discover_datasets(
         REMOTE_REPO: str,
-        REQUIRED_TYPES: set[str] = REQUIRED_TYPES,
+        REQUIRED_TYPES: set[str],
         remote_collection: str = "LSSTComCam/DP1",
         logger: logging.Logger = None) -> dict:
     """
@@ -424,7 +413,7 @@ def transfer_dataset(remote_repo: str,
                     day_obs=None,
                     physical_filter=None, skymap=None,
                     collections: str | list[str] = None,
-                    dataset: str = None,
+                    dataset: str | list[str] = None,
                     logger: logging.Logger = None) -> bool:
     """
     Transfer (use CLI 'butler transfer-datasets' to preserve UUIDs)
@@ -492,6 +481,7 @@ def ensure_chained_collection(
         local_repo: str,
         chain_name: str,
         members: list[str],
+        run_name: str = None,
         logger: logging.Logger = None) -> bool:
     """
     Creation/update of a CHAINED collection:
@@ -499,29 +489,31 @@ def ensure_chained_collection(
       - Avoids ingest/transfer/curated/other system collections
     """
     reg = Butler(local_repo, writeable=True).registry
+    existing = reg.queryCollections()
+
+    # Create RUN if not exists
+    if run_name and run_name not in existing:
+        if logger: logger.info(f"[CREATE] RUN collection: {run_name}")
+        reg.registerCollection(run_name, CollectionType.RUN)
+        members.append(run_name)
+    else:
+        if run_name and logger: logger.info(f"[OK] RUN already exists: {run_name}")
 
     # Create chain if it does not exist
-    if chain_name not in reg.queryCollections():
+    if chain_name not in existing:
         reg.registerCollection(chain_name, CollectionType.CHAINED)
         if logger: logger.info(f"Registered CHAINED collection: {chain_name}")
 
     # Filter dangerous or irrelevant collections
     safe_members = []
     for m in members:
-        if m == chain_name:  # Never include the chain itself
-            continue
-        if m.startswith("ingest") or m.startswith("transfer") or m.startswith("_"):  # Skip system collections
-            continue
-        if "butler" in m.lower():  # Skip curated/registry internals
-            continue
+        if m == chain_name: continue # Never include the chain itself
+        if m.startswith("ingest") or m.startswith("transfer") or m.startswith("_"): continue  # Skip system collections
+        if "butler" in m.lower(): continue # Skip curated/registry internals
         safe_members.append(m)
 
     # Apply chain
     reg.setCollectionChain(chain_name, safe_members)
-    if logger:
-        logger.info(f"Set chain for '{chain_name}' -> {safe_members}")
+    if logger: logger.info(f"Set chain for '{chain_name}' -> {safe_members}")
+
     return True
-
-
-
-

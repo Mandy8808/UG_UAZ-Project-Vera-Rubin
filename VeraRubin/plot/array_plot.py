@@ -48,6 +48,7 @@ def pixel_intensity(image_array_list, y_positions_pixel, image_ref=False,
     cmap = cm.get_cmap(colormap, len(y_positions_pixel))
     lines = ['-', ':', '.-','--']
     colors = []
+
     
     # Loop over each subplot axis
     axes_intensity = axes[1:] if image_ref else axes

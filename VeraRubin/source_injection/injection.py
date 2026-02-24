@@ -724,4 +724,4 @@ def main_inject_stamp(
         with open(info_save_path + '.txt', "w") as f:
             json.dump(table_info, f, indent=4, default=make_serializable)
 
-    return injected_exposures # , sort_visit_calexp_dataset
+    return injected_exposures

@@ -1,19 +1,19 @@
 # vera rubin v1.0
 # coadd.custom_warp.py
 
-import subprocess
+#import subprocess
 import lsst.geom
 import logging
 import os, sys
+#import pathlib
 
 from lsst.drp.tasks.make_direct_warp import MakeDirectWarpTask, MakeDirectWarpConfig, WarpDetectorInputs
 from lsst.pipe.tasks.selectImages import WcsSelectImagesTask
 from lsst.pipe.tasks.coaddBase import makeSkyInfo
 from lsst.skymap import TractInfo, PatchInfo
-from lsst.daf.butler import Butler,DatasetRef
+from lsst.daf.butler import Butler, DatasetRef, DatasetType, CollectionType
 from collections import defaultdict
 from pathlib import Path
-
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -36,7 +36,8 @@ def custom_warp(
     filter_by_region: bool = False,      # use visit_detector_region (if available)
     detectors: list = None,              # allowed detectors
     LOGDIR: str = "warps",
-) -> list:
+    out: bool = True,
+):
     """
     Custom warping function for LSST coaddition.
 
@@ -79,7 +80,7 @@ def custom_warp(
         datasetType=datasetType,
         skymap_name=skymap_name,
         use_visit_summary=True,
-        out=True,
+        out=out,
         logger=logger
     )
 
@@ -118,11 +119,11 @@ def select_visits(
     
     # Query all visits for this band + instrument
     visit_refs = visit_dataset(butler=butler,
-                                  band=band, loc_data=loc,
-                                  use_patch_area=filter_by_patch,
-                                  filter_by_region=filter_by_region,
-                                  detectors=detectors, 
-                                  instrument=instrument)
+                               band=band, loc_data=loc,
+                               use_patch_area=filter_by_patch,
+                               filter_by_region=filter_by_region,
+                               detectors=detectors, 
+                               instrument=instrument)
     if logger: logger.info(f"[SELECT] Candidate visits: {len(visit_refs)}")
 
     # Load WCS + BBox to filter images by footprint intersection
@@ -239,10 +240,27 @@ def runDirectWarpTask(
             if logger: logger.info(f"WARP SAVED: visit={visit_id}")
             visit_warps[visit_id] = results.warp
         else:
-            pass
-            # no work because we need the tract, and path dimmension
-            #dataId_out = outputRefs_warps(registry, first_input.data_id, sky_info, skymap_name="lsst_cells_v1", dtype_name="directWarp", logger=logger)
-            #butler.put(results.warp, dataId_out)
+            # Ensure datasetType exists
+            ensure_directWarp_datasetType(butler)
+            
+            # Save each detector warp
+            dataId_out = {}
+            dataId_out["instrument"] = first_input.data_id.get('instrument')
+            dataId_out["visit"] = first_input.data_id.get('visit')
+            # dataId_out["detector"] = first_input.data_id.get('detector')
+            # dataId_out["band"] = first_input.data_id.get('band')
+            dataId_out["skymap"] = skymap_name
+            dataId_out["tract"] = f"{int(tract_info.getId())}"
+            dataId_out["patch"] = f"{int(patch_info.getSequentialIndex())}"
+            
+            butler.put(results.warp, "directWarp", dataId_out)
+
+            if logger:
+                logger.info(
+                    f"[PUT] directWarp saved: visit={visit_id}, "
+                    f"detector={det_id}, tract={dataId_out['tract']}, "
+                    f"patch={dataId_out['patch']}"
+                    )
 
         # Explicit cleanup
         del results
@@ -255,3 +273,93 @@ def runDirectWarpTask(
     del sky_map
     
     return visit_warps if out else None
+
+def ensure_directWarp_datasetType(butler):
+    registry = butler.registry
+    universe = registry.dimensions
+
+    if "directWarp" in {dt.name for dt in registry.queryDatasetTypes()}:
+        return
+
+    dimensions = universe.conform(
+        ("instrument", "visit", # "detector", 
+         "skymap", "tract", "patch")
+    )
+    
+    dt = DatasetType(
+        name="directWarp",
+        dimensions=dimensions,
+        storageClass="ExposureF",
+    )
+
+    registry.registerDatasetType(dt)
+
+def setup_run_and_chain(
+    repo: str,
+    run_name: str = "direct_warp_run",
+    base_chain: str = "local_main_chain",
+    new_chain: str = "local_with_warps",
+    logger: logging.Logger | None = None,
+):
+    """
+    Create a personal RUN collection and a CHAINED collection including it.
+
+    Parameters
+    ----------
+    repo : str
+        Butler repository path.
+    run_name : str
+        Name of the personal RUN.
+    base_chain : str
+        Existing chained collection (e.g. local_main_chain).
+    new_chain : str
+        Name of new chained collection to create.
+
+    Returns
+    -------
+    Butler
+        Butler instance configured with:
+            collections=new_chain
+            run=user/run_name
+    """
+
+    butler = Butler(repo, writeable=True)
+    registry = butler.registry
+
+    # Create RUN if not exists
+    ############################
+    existing = registry.queryCollections()
+
+    if run_name not in existing:
+        if logger: logger.info(f"[CREATE] RUN collection: {run_name}")
+        registry.registerCollection(run_name, CollectionType.RUN)
+    else:
+        if logger: logger.info(f"[OK] RUN already exists: {run_name}")
+
+    # Create CHAINED if not exists
+    ############################
+    if new_chain not in existing:
+        if logger: logger.info(f"[CREATE] CHAINED collection: {new_chain}")
+        registry.registerCollection(new_chain, CollectionType.CHAINED)
+    else:
+        if logger: logger.info(f"[OK] CHAINED already exists: {new_chain}")
+
+    # Set chain structure (RUN first, base_chain after)
+    # --------------------------------------------------
+    registry.setCollectionChain(
+        new_chain,
+        [run_name, base_chain] if base_chain else run_name
+    )
+
+    # Return fully configured Butler
+    ############################
+    configured_butler = Butler(
+        repo,
+        collections=new_chain,
+        run=run_name,
+        writeable=True
+    )
+
+    if logger: logger.info("[READY] Butler configured for read/write")
+
+    return configured_butler

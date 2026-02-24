@@ -2,13 +2,15 @@
 
 # Butler
 from .butler.butler import ExpButler
-from .butler.custom_butler import main_local_repo, create_empty_repo,\
-                           instrument_register_from_remote, register_datasetTypes, skymap_register_from_remote,\
-                           discover_datasets, transfer_dataset, ensure_chained_collection
+from .butler.local_butler import LocalButler, log_menseger, create_empty_repo, instrument_register_from_remote,\
+                                  register_datasetTypes, skymap_register_from_remote,\
+                                  discover_datasets, transfer_dataset, ensure_chained_collection
 # Coadd
 from .coadd.custom_coadd import custom_coadd_filter, custom_coadd_multiband, load_custom_coadd_from_file
 from .coadd.custom_inject_coadd import coadd_exposures_pipeline, coadd_exposures_pipeline, leave_one_out_residual, validate_rotation
-from .coadd.custom_warp import custom_warp, select_visits, runDirectWarpTask
+
+# Warp
+from .warp.custom_warp import custom_warp, select_visits, runDirectWarpTask, ensure_directWarp_datasetType, setup_run_and_chain
 
 # exposure
 from exposure.exposure import load_exposures, save_exposure, normalize_exposures, exposure_to_fits_datahdr, cutout_exposure
@@ -40,13 +42,14 @@ from visit.visit import Visit, combine_visits_selected, visit_dataset
 __all__ = [
     # ExpButler
     'ExpButler', 
-    'main_local_repo', 'create_empty_repo',
-    'instrument_register_from_remote', 'register_datasetTypes', 'skymap_register_from_remote',
+    'LocalButler', 'log_menseger', 'create_empty_repo','instrument_register_from_remote', 'register_datasetTypes', 'skymap_register_from_remote',
     'discover_datasets', 'transfer_dataset', 'ensure_chained_collection',
     # Coadd
     'custom_coadd_filter', 'custom_coadd_multiband', 'load_custom_coadd_from_file',
     'coadd_exposures_pipeline', 'leave_one_out_residual', 'validate_rotation',
-    'custom_warp', 'select_visits', 'runDirectWarpTask',
+    # Warp
+    'custom_warp', 'select_visits', 'runDirectWarpTask', 'ensure_directWarp_datasetType',
+    'setup_run_and_chain',
     # Exposure
     'load_exposures', 'save_exposure', 'normalize_exposures', 'exposure_to_fits_datahdr', 'cutout_exposure',
     # Fits
