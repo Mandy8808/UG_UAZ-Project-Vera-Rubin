@@ -6,6 +6,7 @@
 # https://github.com/alxogm/SL-MEX-1/blob/main/stamp_inyect_1.ipynb
 import os, sys
 import time
+import json
 
 import numpy as np
 import astropy.units as u
@@ -81,8 +82,8 @@ def save_visit_images(
     local_repo: str,
     collections: str,
     run_name: str,
-    injected_exposures,
-    visits: dict,
+    injected_exposures: list,
+    visits: list[dict],
     dataset_type: str = "visit_image",
 ):
     """
@@ -99,7 +100,7 @@ def save_visit_images(
 
     saved, skipped = [], []
     for i, exposure in enumerate(injected_exposures):
-        dataId = visits[str(i)]["dataId"]
+        dataId = visits[i]
         visit = dataId["visit"]
 
         try:
@@ -551,13 +552,17 @@ def inject_stamp(visit_image, inj_cat):
     return injected_exposure
 
 def main_inject_stamp(
-        butler, 
-        loc_data,
-        band,
-        stamp_paths,
-        mags,
-        ra_list,
-        dec_list,
+        REPO: str,
+        collections: str | list[str],
+        loc: list | tuple,
+        band: str,
+        stamp_paths: str | list[str],
+        mags: list[float],
+        ra_list: list[float],
+        dec_list: list[float],    
+        REPO_SAVE: str = '', 
+        collection_save: str = "local_with_injection",
+        run_name_save: str = "direct_injected_run",
         sky_coordinates=True,
         use_patch_area=False,
         detectors=None,
@@ -570,7 +575,6 @@ def main_inject_stamp(
         keep_size=False,
         interp_order=3,
         update_wcs=True,
-        c=1,
         warping_kernel='lanczos4',
         info_save_path=None,
         visit_name="visit_image",
@@ -584,7 +588,7 @@ def main_inject_stamp(
     ----------
     butler : lsst.daf.butler.Butler
         Butler instance for accessing LSST data.
-    loc_data : tuple
+    loc : tuple
         If `sky_coordinates=True`: (ra, dec) in degrees.  
         If `sky_coordinates=False`: (tract, patch).
     band : str
@@ -596,8 +600,8 @@ def main_inject_stamp(
     ra_list, dec_list : list of float
         RA/Dec positions for the injected sources (degrees).
     sky_coordinates : bool, optional
-        If True, loc_data is interpreted as (ra, dec).  
-        If False, loc_data is interpreted as (tract, patch).
+        If True, loc is interpreted as (ra, dec).  
+        If False, loc is interpreted as (tract, patch).
     use_patch_area : bool, optional
         If False (default), uses only the central coordinate of the patch.  
         If True, uses the full patch area (as in coadd construction).
@@ -615,7 +619,7 @@ def main_inject_stamp(
         If True, use spherical separation for spacing. Otherwise, Euclidean.
     from_data : bool
         if True used the function `apply_correction_from_data` else `apply_correction_from_exposureF`
-    keep_size, interp_order, update_wcs, c, warping_kernel : passed to `apply_correction_to_stamp`
+    keep_size, interp_order, update_wcs, warping_kernel : passed to `apply_correction_to_stamp`
         Options for stamp rotation and resampling.
     info_save_path : str, optional
         Save address for data: {}, Default = None
@@ -639,22 +643,28 @@ def main_inject_stamp(
     If `info_save_path` is defined, metadata and injection details will be 
     saved to `{info_save_path}.txt`.
     """
+    # loading the butler
+    if info: print(f"[INFO] Loading the butler...")
+    try:
+        butler = Butler(REPO, collections=collections)
+    except Exception as e:
+        if info: print(f"Could not have access to Butler registry on: {REPO}")
+        raise
 
     # Resolve coordinates
     if sky_coordinates:
-        ra_deg, dec_deg = loc_data
+        ra_deg, dec_deg = loc
     else:
-        tract, patch = loc_data
+        tract, patch = loc
         ra_deg, dec_deg = patch_center(butler, tract, patch, sequential_index=True)
-    loc_data = (ra_deg, dec_deg)
-    if info:
-        print(f"[INFO] Injection on sky coordinates: RA={ra_deg}, Dec={dec_deg}")
+    loc = (ra_deg, dec_deg)
+    if info: print(f"[INFO] Injection on sky coordinates: RA={ra_deg}, Dec={dec_deg}")
 
     # Identify visit images around location
     visit_calexp_dataset = visit_dataset(
         butler,
         band,
-        loc_data,
+        loc,
         use_patch_area=use_patch_area,
         detectors=detectors,
         timespan=timespan,
@@ -706,8 +716,7 @@ def main_inject_stamp(
     if info:
         print(f"[INFO] Using {len(sort_visit_calexp_dataset)} visits after sorting and selection.")
     
-    if info_save_path:
-        table_info['snr'] = sorter_snr
+    if info_save_path: table_info['snr'] = sorter_snr
 
     # Compute relative rotation angles w.r.t first visit
     ref_wcs = sort_getWcs_list[0]  # referential visit
@@ -737,14 +746,13 @@ def main_inject_stamp(
                 keep_size=keep_size,
                 interp_order=interp_order,
                 update_wcs=update_wcs,
-                c=c,
+                c=1,
                 from_data=from_data,
                 warping_kernel=warping_kernel
             )
             for j, stamp_file in enumerate(stamp_paths)
         ]  # [rotate_stamp1_path, rotate_stamp2_path, ...]
-        if info_save_path:
-            table_info[f'rotated stamps path angle {str(angle)}'] = rotated_stamps_path
+        if info_save_path: table_info[f'rotated stamps path angle {str(angle)}'] = rotated_stamps_path
 
         # Create injection catalog
         inj_cat = create_crowded_injection_catalog(
@@ -759,18 +767,27 @@ def main_inject_stamp(
         # Perform injection
         try:
             inj_exp = inject_stamp(visit_image, inj_cat)
-            injected_exposures.append(inj_exp)
-            if info_save_path:
-                table_info.setdefault('data_Id', {})[f'{i}'] = dict(visit_id.to_simple())
+
+            if REPO_SAVE:
+                save_visit_images(local_repo=REPO_SAVE,
+                         collections=collection_save,
+                         run_name=run_name_save,
+                         injected_exposures=[inj_exp],
+                         dataset_type = "visit_image",
+                         visits=[visit_id],
+                        )
+            else:
+                injected_exposures.append(inj_exp)
         except Exception as e:
             print(f"[ERROR] Injection failed for visit {visit_image.getInfo().getVisitInfo().getId()}: {e}")
         finally:
+            if info_save_path: table_info.setdefault('data_Id', {})[f'{i}'] = dict(visit_id.to_simple())
             if remove_rotated_stamps:
                 for path in rotated_stamps_path:
                     if os.path.exists(path):
                         os.remove(path)
-    if info:
-        print("[INFO] Injection complete.")
+                
+    if info: print("[INFO] Injection complete.")
 
     if info_save_path:
         # Make the directory if it doesn't exist
