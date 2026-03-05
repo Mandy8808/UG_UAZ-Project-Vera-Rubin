@@ -25,8 +25,11 @@ from tools.tools import setup_logger
 # Top-level
 # ---------------------------------------------------------------------
 def custom_warp(
-    butler: Butler,
+    REPO: str,
+    collections: str | list[str],
     loc: list | tuple,
+    run_name: str = "direct_warp_run",
+    name_chain: str = "local_with_warps",
     band: str = "u",
     instrument: str = "LSSTComCam",
     datasetType: str = "visit_image",
@@ -58,7 +61,8 @@ def custom_warp(
     # select visits
     logger.info(f"Selecting visits overlapping the patch...")
     visit_refs, tract_info, patch_info = select_visits(
-        butler=butler,
+        REPO=REPO,
+        collections=collections,
         loc=loc,
         band=band,
         instrument=instrument,
@@ -73,7 +77,10 @@ def custom_warp(
     # run warping task
     logger.info(f"Running warping task for selected visits...")
     visit_warps = runDirectWarpTask(
-        butler=butler,
+        REPO=REPO,
+        run_name=run_name,
+        name_chain=name_chain,
+        collections=collections,
         dataset_refs=visit_refs,
         tract_info=tract_info,
         patch_info=patch_info,
@@ -90,7 +97,8 @@ def custom_warp(
 # Low-level helpers
 # ---------------------------------------------------------------------
 def select_visits(
-    butler: Butler,
+    REPO: str,
+    collections: str | list[str],
     loc: list | tuple,
     band: str = "u",
     instrument: str = "LSSTComCam",
@@ -107,6 +115,14 @@ def select_visits(
     """
     ra_deg, dec_deg = loc
     point_sky = lsst.geom.SpherePoint(ra_deg, dec_deg, lsst.geom.degrees)
+
+    # loading the butler
+    logger.info(f"Loading the butler...")
+    try:
+        butler = Butler(REPO, collections=collections)
+    except Exception as e:
+        if logger: logger.exception(f"Could not have access to Butler registry on: {REPO}")
+        raise
 
     # Load sky map
     sky_map = butler.get("skyMap", skymap=skymap_name)
@@ -135,7 +151,7 @@ def select_visits(
             bboxList.append(exp.getBBox())
             validRefs.append(ref)
         except Exception as e:
-            if logger: logger.exception( f"[WARN] Failed reading {ref.dataId}: {e}")
+            if logger: logger.exception(f"[WARN] Failed reading {ref.dataId}: {e}")
 
      # Prepare polygon vertices
     poly = patch_info.getOuterSkyPolygon()
@@ -152,10 +168,13 @@ def select_visits(
 # High-level operations
 # ---------------------------------------------------------------------
 def runDirectWarpTask(
-    butler: Butler,
+    REPO: str,
+    collections: str | list[str],
     dataset_refs: list[DatasetRef] | tuple[DatasetRef],
     tract_info: TractInfo,
     patch_info: PatchInfo,
+    run_name: str = "direct_warp_run",
+    name_chain: str = "local_with_warps",
     datasetType: str = "visit_image",
     skymap_name: str = "lsst_cells_v1",
     use_visit_summary: bool = True,
@@ -173,6 +192,11 @@ def runDirectWarpTask(
     dict[visit_id, list[ExposureF]] or None
         Warps per visit if out=True, else None.
     """
+    
+    # loading the butler
+    logger.info(f"Loading the butler with the respectively RUN...")
+    butler = setup_run_and_chain(repo=REPO, run_name=run_name,
+                                 base_chain=collections, new_chain=name_chain, logger=logger)
 
     if logger: logger.info(f"[INF] Build WarpDetectorInputs")
     
@@ -220,7 +244,7 @@ def runDirectWarpTask(
     # Output container
     visit_warps = {} if out else None
     
-    # Run per visit (IMPORTANT: SkyInfo recreated every time)
+    # Run per visit (IMPORTANT: SkyInfo recreated every time for bug)
     for visit_id, detector_inputs in inputs.items():
         if logger: logger.info(f"Processing visit {visit_id}")
         
@@ -250,8 +274,8 @@ def runDirectWarpTask(
             # dataId_out["detector"] = first_input.data_id.get('detector')
             # dataId_out["band"] = first_input.data_id.get('band')
             dataId_out["skymap"] = skymap_name
-            dataId_out["tract"] = f"{int(tract_info.getId())}"
-            dataId_out["patch"] = f"{int(patch_info.getSequentialIndex())}"
+            dataId_out["tract"] = int(tract_info.getId())
+            dataId_out["patch"] = int(patch_info.getSequentialIndex())
             
             butler.put(results.warp, "directWarp", dataId_out)
 

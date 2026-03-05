@@ -347,11 +347,6 @@ def skymap_register_from_remote(
             "in any collection of the remote repository."
         )
 
-    # run_name = found_refs[0].run
-    # if logger: logger.info(f"[SKYMAP] SkyMap dataset stored in RUN: {run_name}")
-        
-    # TRANSFER SKYMAP DATASET
-    # cmd = ["butler", "transfer-datasets", remote_repo, local_repo, "--dataset-type", "skyMap", "--collections", run_name]
     cmd = [
         "butler",
         "transfer-datasets",

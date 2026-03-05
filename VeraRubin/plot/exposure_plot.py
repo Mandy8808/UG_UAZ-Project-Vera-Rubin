@@ -64,16 +64,16 @@ def normalize_axes(axes, nrows, ncols):
         return axes.reshape((nrows, 1))
     return axes
 
-def render_image(ax, img, title, scale, percentiles, cmap="gray"):
+def render_image(ax, img, title, scale, percentiles, cmap="gray", extent=None):
     from astropy.visualization import ZScaleInterval, ImageNormalize, AsinhStretch
     if scale == "zscale_asinh":
         norm = ImageNormalize(img, interval=ZScaleInterval(),
                                stretch=AsinhStretch())
-        im = ax.imshow(img, origin="lower", cmap=cmap, norm=norm)
+        im = ax.imshow(img, origin="lower", cmap=cmap, norm=norm, extent=extent)
     else:
         vmin, vmax = np.nanpercentile(img, percentiles)
         im = ax.imshow(img, origin="lower", cmap=cmap,
-                       vmin=vmin, vmax=vmax)
+                       vmin=vmin, vmax=vmax, extent=extent)
 
     ax.set_title(title, fontsize=11)
     return im
@@ -108,7 +108,8 @@ def injection_steps(before, after, points, diference=True,
                     grid=True, add_colorbar=True, percentiles=[5, 95],
                     cutout_radius_arcsec=None,
                     xlim_world=None, ylim_world=None,
-                    save_path=None, names=['Before', 'After', 'Difference']):
+                    save_path=None, names=['Before', 'After', 'Difference'],
+                    extent=None):
     """
     Compare exposures before/after injection and plot with WCS coordinates.
 
@@ -182,7 +183,7 @@ def injection_steps(before, after, points, diference=True,
                     color='yellow', fontsize=12, weight='bold')
 
         # Contrast scaling
-        im = render_image(ax, data, title_str, "percentiles", percentiles, cmap="gray")
+        im = render_image(ax, data, title_str, "percentiles", percentiles, cmap="gray", extent=extent)
 
         if add_colorbar:
             fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label='Intensity')

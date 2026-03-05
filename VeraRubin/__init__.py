@@ -30,8 +30,9 @@ from .plot.exposure_plot import fix_wcsaxes_labels, extract_array, normalize_axe
 from .sky.sky import tract_patch, patch_center, get_patch_center_radius, RA_to_degree, Dec_to_degree, skywcs_to_astropy
 
 # Injection
-from source_injection.injection import make_serializable, measure_quality, create_crowded_injection_catalog, apply_correction_from_data
-from source_injection.injection import apply_correction_to_stamp, inject_stamp, main_inject_stamp, apply_correction_from_exposureF
+from source_injection.injection import make_serializable, measure_quality, create_crowded_injection_catalog, apply_correction_from_data,\
+                                       apply_correction_to_stamp, inject_stamp, main_inject_stamp, apply_correction_from_exposureF,\
+                                       save_visit_images
 
 # Tools
 from tools.tools import progressbar, setup_logger, _run, get_butler_location, mjds_to_dates
@@ -63,7 +64,7 @@ __all__ = [
     'tract_patch', 'patch_center', 'get_patch_center_radius', 'RA_to_degree', 'Dec_to_degree', 'skywcs_to_astropy',
     # Injection
     'make_serializable', 'measure_quality', 'create_crowded_injection_catalog', 'apply_correction_from_data',
-    'apply_correction_to_stamp', 'inject_stamp', 'main_inject_stamp', 'apply_correction_from_exposureF',
+    'apply_correction_to_stamp', 'inject_stamp', 'main_inject_stamp', 'apply_correction_from_exposureF', 'save_visit_images',
     # Tools
     'progressbar', 'setup_logger', '_run', 'get_butler_location', 'mjds_to_dates',
     # Visit

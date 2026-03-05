@@ -14,11 +14,15 @@ from lsst.source.injection import VisitInjectConfig, VisitInjectTask, generate_i
 from astropy.coordinates import SkyCoord
 from astropy.table import Table, vstack
 from astropy.io import fits
+from lsst.daf.butler import Butler
+from lsst.daf.butler.registry import ConflictingDefinitionError
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from sky.sky import patch_center
 from visit.visit import visit_dataset
+
+
 
 ##############################################################################
 
@@ -73,6 +77,65 @@ def measure_quality(calexp):
     SNR = signal / noise if noise > 0 else 0
     return SNR
 
+def save_visit_images(
+    local_repo: str,
+    collections: str,
+    run_name: str,
+    injected_exposures,
+    visits: dict,
+    dataset_type: str = "visit_image",
+):
+    """
+    Save injected exposures into a local butler repository.
+    
+    Returns
+    -------
+    dict{"saved": list of visit IDs saved,
+        "skipped": list of visit IDs already existing
+        }
+    """
+    configured_butler = Butler(local_repo, collections=collections,
+                                run=run_name, writeable=True)
+
+    saved, skipped = [], []
+    for i, exposure in enumerate(injected_exposures):
+        dataId = visits[str(i)]["dataId"]
+        visit = dataId["visit"]
+
+        try:
+            # Check if dataset already exists
+            existing = configured_butler.registry.queryDatasets(
+                dataset_type,
+                dataId=dataId,
+            )
+            if list(existing):
+                msg = f"[SKIP] visit {visit} already exists."
+                print(msg)
+                skipped.append(visit)
+                continue
+
+            # Save dataset
+            configured_butler.put(exposure, dataset_type, dataId)
+
+            msg = f"[SAVE] visit {visit} stored successfully."
+            print(msg)
+            saved.append(visit)
+
+        except ConflictingDefinitionError:
+            msg = f"[SKIP] visit {visit} conflict detected."
+            print(msg)
+
+            skipped.append(visit)
+
+        except Exception as e:
+            msg = f"[ERROR] visit {visit} failed: {e}"
+            print(msg)
+            raise
+
+    return {
+        "saved": saved,
+        "skipped": skipped,
+    }
 
 # High-level operations
 # ---------------------------------------------------------------------
@@ -708,11 +771,6 @@ def main_inject_stamp(
                         os.remove(path)
     if info:
         print("[INFO] Injection complete.")
-
-    if info_save_path:
-         import json
-         with open(info_save_path+'.txt', "w") as f:
-             json.dump(table_info, f, indent=4, default=make_serializable)
 
     if info_save_path:
         # Make the directory if it doesn't exist
