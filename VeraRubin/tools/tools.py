@@ -124,6 +124,7 @@ def progressbar(current_value, total_value, bar_length=20, progress_char='#'):
 
 
 ## AlardLuptonSubtractTask
+
 def diff_AlardLupton(templateExposure, scienceExposure, warp=True):
     """
     The idea was take from:
@@ -171,6 +172,7 @@ def diff_AlardLupton(templateExposure, scienceExposure, warp=True):
 
     # here because schema is modify by detectTask.run
     deblendTask = SourceDeblendTask(schema=schema)
+    
     measConfig = SingleFrameMeasurementTask.ConfigClass()
     measTask = SingleFrameMeasurementTask(schema=schema, config=measConfig, algMetadata=algMetadata)
 
@@ -185,15 +187,10 @@ def diff_AlardLupton(templateExposure, scienceExposure, warp=True):
     measTask.run(measCat=sources, exposure=scienceExposure)
     sources = sources.copy(True)
 
-    # Sky sources flag (random)
-    print("===> Sky sources")
-    sky_source_key = schema["sky_source"].asKey()
+    # Sky sources flag
+    print("===> Selecting sky sources")
+    select_sky_sources(sources, schema)
     
-    num_sources = len(sources)
-    sky_indices = np.random.choice(num_sources, size=int(0.5 * num_sources), replace=False)
-    for i, record in enumerate(sources):
-        record.set(sky_source_key, i in sky_indices)
-
     # Warp the templateExposure to match with scienceExposure (imagen + PSF)
     if warp:
         print("===> Warping")
@@ -208,6 +205,7 @@ def diff_AlardLupton(templateExposure, scienceExposure, warp=True):
     # https://pipelines.lsst.io/py-api/lsst.ip.diffim.AlardLuptonSubtractTask.html#lsst.ip.diffim.AlardLuptonSubtractTask.run
     config = AlardLuptonSubtractConfig()
     subtractTask = AlardLuptonSubtractTask(config=config)
+    
     result = subtractTask.run(
         template=warp_templateExposure,
         science=scienceExposure,
@@ -215,7 +213,7 @@ def diff_AlardLupton(templateExposure, scienceExposure, warp=True):
     )
     diff = result.difference
     return diff
-
+    
 def warp_img(ref_img, img_to_warp, warping_kernel="lanczos5"):
     """
     Warp an exposure (image + PSF) onto the coordinate system of another.
@@ -234,7 +232,7 @@ def warp_img(ref_img, img_to_warp, warping_kernel="lanczos5"):
     warpedExp = warper.warpExposure(ref_img.wcs, img_to_warp, destBBox=bbox)
     warpedExp = copy.deepcopy(warpedExp)
 
-    # PSF warp
+    # Warp PSF
     psf = img_to_warp.getPsf()
     if psf is not None:
         xyTransform = afwGeom.makeWcsPairTransform(img_to_warp.getWcs(),
@@ -242,3 +240,52 @@ def warp_img(ref_img, img_to_warp, warping_kernel="lanczos5"):
         warped_psf = measAlg.WarpedPsf(psf, xyTransform)
         warpedExp.setPsf(warped_psf)
     return warpedExp
+
+def select_sky_sources(sources, schema, max_sky=500):
+    import random
+
+    sky_source_key = schema["sky_source"].asKey()
+    selected = []
+    for record in sources:
+        try:
+            flux = record.get("base_PsfFlux_instFlux")
+            flux_err = record.get("base_PsfFlux_instFluxErr")
+
+            snr = flux / flux_err if flux_err > 0 else 0
+
+            psf_flag = record.get("base_PsfFlux_flag")
+            saturated = record.get("base_PixelFlags_flag_saturated")
+            bad = record.get("base_PixelFlags_flag_bad")
+            edge = record.get("base_PixelFlags_flag_edge")
+            nchild = record.get("deblend_nChild")
+            
+            is_sky = (
+                abs(snr) < 20 and      # 2 stricto
+                not saturated and
+                not bad and
+                not edge and
+                nchild == 0
+            )
+        except Exception:
+            is_sky = False
+
+        record.set(sky_source_key, is_sky)
+        if is_sky:
+            selected.append(record)
+
+    print(f"Sky sources seleccionadas: {len(selected)}")
+
+    # FALLBACK SI NO HAY
+    if len(selected) == 0:
+        print("No sky sources → usando fallback aleatorio")
+        n = len(sources)
+        fallback_idx = random.sample(range(n), max(5, int(0.2 * n)))
+
+        for i, record in enumerate(sources):
+            record.set(sky_source_key, i in fallback_idx)
+    elif len(selected) > max_sky:
+        # limitar número
+        keep = set(random.sample(range(len(selected)), max_sky))
+        for i, record in enumerate(selected):
+            if i not in keep:
+                record.set(sky_source_key, False)
