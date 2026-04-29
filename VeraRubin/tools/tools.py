@@ -120,3 +120,125 @@ def progressbar(current_value, total_value, bar_length=20, progress_char='#'):
     # Print the progress bar (overwrite line until finished)
     end_char = '\r' if current_value < total_value else '\n'
     print(loadbar, end=end_char)
+
+
+
+## AlardLuptonSubtractTask
+def diff_AlardLupton(templateExposure, scienceExposure, warp=True):
+    """
+    The idea was take from:
+    https://community.lsst.org/t/issues-with-image-subtraction/10429
+    """
+    import numpy as np
+    import lsst.afw.table as afwTable
+    import lsst.daf.base as dafBase
+    from lsst.meas.algorithms.detection import SourceDetectionTask
+    from lsst.meas.deblender import SourceDeblendTask
+    from lsst.meas.base import SingleFrameMeasurementTask
+    from lsst.ip.diffim import AlardLuptonSubtractTask, AlardLuptonSubtractConfig
+    
+    # Remove the bit mask
+    print("===> Cleaning masks")
+    template_masks = set(templateExposure.mask.getMaskPlaneDict())
+    scienceExposure_masks = set(scienceExposure.mask.getMaskPlaneDict())
+    common_masks = template_masks & scienceExposure_masks
+
+    for exp in [templateExposure, scienceExposure]:
+        for mask in list(exp.mask.getMaskPlaneDict().keys()):
+            if mask not in common_masks:
+               print(f"masks: {mask}")
+               try:
+                   exp.mask.removeAndClearMaskPlane(mask)
+               except Exception:
+                   pass
+    
+    # Make a schema
+    # Identified sources on the scienceExposure. 
+    # This catalog is used to select sources to perform 
+    # the AL PSF matching on stamp images around them.
+    schema = afwTable.SourceTable.makeMinimalSchema()
+    schema.addField("coord_raErr", type="F")
+    schema.addField("coord_decErr", type="F")
+    schema.addField("detect_isPrimary", type="F")  # Flag
+    schema.addField("sky_source", type="Flag")
+    algMetadata = dafBase.PropertyList()
+
+    # Detection task
+    detectConfig = SourceDetectionTask.ConfigClass()
+    detectConfig.thresholdValue = 5
+    detectConfig.thresholdType = "stdev"
+    detectTask = SourceDetectionTask(schema=schema, config=detectConfig)
+
+    # here because schema is modify by detectTask.run
+    deblendTask = SourceDeblendTask(schema=schema)
+    measConfig = SingleFrameMeasurementTask.ConfigClass()
+    measTask = SingleFrameMeasurementTask(schema=schema, config=measConfig, algMetadata=algMetadata)
+
+    print("===> Run detection")
+    tab = afwTable.SourceTable.make(schema)
+    result = detectTask.run(tab, scienceExposure)
+    sources = result.sources
+
+    # Deblend + Measurement
+    print("===> Run Deblend and Measurement")
+    deblendTask.run(scienceExposure, sources)
+    measTask.run(measCat=sources, exposure=scienceExposure)
+    sources = sources.copy(True)
+
+    # Sky sources flag (random)
+    print("===> Sky sources")
+    sky_source_key = schema["sky_source"].asKey()
+    
+    num_sources = len(sources)
+    sky_indices = np.random.choice(num_sources, size=int(0.5 * num_sources), replace=False)
+    for i, record in enumerate(sources):
+        record.set(sky_source_key, i in sky_indices)
+
+    # Warp the templateExposure to match with scienceExposure (imagen + PSF)
+    if warp:
+        print("===> Warping")
+        warp_templateExposure = warp_img(
+            ref_img=scienceExposure,
+            img_to_warp=templateExposure)
+    else:
+        warp_templateExposure = templateExposure
+
+    # Subtraction task 
+    print("===> Subtracting")
+    # https://pipelines.lsst.io/py-api/lsst.ip.diffim.AlardLuptonSubtractTask.html#lsst.ip.diffim.AlardLuptonSubtractTask.run
+    config = AlardLuptonSubtractConfig()
+    subtractTask = AlardLuptonSubtractTask(config=config)
+    result = subtractTask.run(
+        template=warp_templateExposure,
+        science=scienceExposure,
+        sources=sources
+    )
+    diff = result.difference
+    return diff
+
+def warp_img(ref_img, img_to_warp, warping_kernel="lanczos5"):
+    """
+    Warp an exposure (image + PSF) onto the coordinate system of another.
+    """
+    import copy
+    import lsst.afw.math as afwMath
+    import lsst.afw.geom as afwGeom
+    import lsst.meas.algorithms as measAlg
+
+    # warp imagen
+    config = afwMath.Warper.ConfigClass()
+    config.warpingKernelName = warping_kernel
+    warper = afwMath.Warper.fromConfig(config)
+
+    bbox = ref_img.getBBox()
+    warpedExp = warper.warpExposure(ref_img.wcs, img_to_warp, destBBox=bbox)
+    warpedExp = copy.deepcopy(warpedExp)
+
+    # PSF warp
+    psf = img_to_warp.getPsf()
+    if psf is not None:
+        xyTransform = afwGeom.makeWcsPairTransform(img_to_warp.getWcs(),
+                                                   ref_img.getWcs())
+        warped_psf = measAlg.WarpedPsf(psf, xyTransform)
+        warpedExp.setPsf(warped_psf)
+    return warpedExp

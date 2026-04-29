@@ -35,7 +35,7 @@ from source_injection.injection import make_serializable, measure_quality, creat
                                        save_visit_images
 
 # Tools
-from tools.tools import progressbar, setup_logger, _run, get_butler_location, mjds_to_dates
+from tools.tools import progressbar, setup_logger, _run, get_butler_location, mjds_to_dates, diff_AlardLupton, warp_img
 
 # Visit
 from visit.visit import Visit, combine_visits_selected, visit_dataset
@@ -66,7 +66,7 @@ __all__ = [
     'make_serializable', 'measure_quality', 'create_crowded_injection_catalog', 'apply_correction_from_data',
     'apply_correction_to_stamp', 'inject_stamp', 'main_inject_stamp', 'apply_correction_from_exposureF', 'save_visit_images',
     # Tools
-    'progressbar', 'setup_logger', '_run', 'get_butler_location', 'mjds_to_dates',
+    'progressbar', 'setup_logger', '_run', 'get_butler_location', 'mjds_to_dates', 'diff_AlardLupton', 'warp_img',
     # Visit
     'Visit', 'combine_visits_selected', 'visit_dataset'
 ]
